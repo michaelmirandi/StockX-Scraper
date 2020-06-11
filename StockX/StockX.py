@@ -47,19 +47,15 @@ class StockX_Scraper():
         total_scraped = 0; count = 0; product_count = 0
 
         for product in self.col_products.find():
-            count += 1
-            if count > 4:
-                break
-            else:
-                try:
-                    self.get_historical_product_data_001(product['_id'])
-                    product_count += 1
-                except Exception as e:
-                    print('Error', str(e))
-                    print('Could not scrap:', product['name'])
-                    lst_failed.append(product['_id'])
-                    self.sleep(2, 3, 'Sleeping for')
-                    pass
+            try:
+                self.get_historical_product_data_001(product['_id'])
+                product_count += 1
+            except Exception as e:
+                print('Error', str(e))
+                print('Could not scrap:', product['name'])
+                lst_failed.append(product['_id'])
+                self.sleep(2, 3, 'Sleeping for')
+                pass
             print(product_count, 'product(s) scraped so far.')
         print('Total scraped:', total_scraped)
         print(lst_failed)
