@@ -13,13 +13,6 @@ class req:
     def __init__(self, h):
         self.header = {"User-Agent": h}
 
-    def validate(self, test_url):
-        try:
-            r = requests.get(test_url, headers=self.header, proxies=self.proxy)
-            return (r.status_code == 200)
-        except Exception:
-            return False
-
 
 class StockX_Scraper():
     '''
@@ -60,9 +53,29 @@ class StockX_Scraper():
         print('Total scraped:', total_scraped)
         print(lst_failed)
 
+    def get_valid_request(self, url):
+        '''
+        Function: get_valid_request()
+        Parameters: url (specific url that you want to get request for)
+        Returns: valid request for the specified URL
+        Purpose: To get a valid request and not spam the server
+        '''
+        count = 0
+        while True:
+            print('Getting valid request for ', url)
+            req = next(self.req_pool)
+            header = req.header
+            r = requests.get(url, headers=header, proxies=self.proxy)
+            print(r.status_code)
+            if r.status_code == 200: return r
+            count += 1
+            if count > 2:
+                count = 0
+                self.sleep(90, 110, '---Resting for')
+
     def get_historical_product_data_001(self, sku):
         '''
-        Function: get_historical_product_data()
+        Function: get_historical_product_data_001()
         Parameters: sku (specific sku that you want to get information on)
         Returns: Nothing
         Purpose: To collect the historical data on a certain sku and store in MongoDB
@@ -70,6 +83,8 @@ class StockX_Scraper():
         '''
 
         global total_scraped
+        # test purposes
+        total_scraped = 0
         df_historicaldata = pd.DataFrame()
         page_count = 1
         while True:
@@ -78,33 +93,22 @@ class StockX_Scraper():
             sku + \
             '/activity?state=480&currency=USD&limit=20000&page='+ \
             str(page_count) + '&sort=createdAt&order=DESC&country=US'
-            count = 0
-            while True:
-                print('Getting valid request for ', url)
-                req = next(self.req_pool)
-                header = req.header
-                r = requests.get(url, headers=header, proxies=self.proxy)
-                if r.status_code == 200: break; self.sleep(1, 1, None)
-                count += 1
-                if count > 2:
-                    count = 0
-                    self.sleep(90, 110, '---Resting for')
+
+            if page_count > 1:
+                print(data_historical['Pagination']['total'] + 20000, page_count * 20000)
+                if data_historical['Pagination']['total'] + 20000 < page_count * 20000:
+                    total_scraped += data_historical['Pagination']['total']
+                    break
+
+            r = self.get_valid_request(url)
 
             data_historical = r.json()
-            if 0 < data_historical['Pagination']['total'] < 20000:
-                df_historicaldata = df_historicaldata.append(pd.DataFrame(list(data_historical['ProductActivity'])))
-                page_count += 1
-                total_scraped += data_historical['Pagination']['total']
-                break
-            elif (page_count - 1) * 20000 <= data_historical['Pagination']['total'] <= page_count * 20000:
-                    df_historicaldata = df_historicaldata.append(pd.DataFrame(list(data_historical['ProductActivity'])))
-                    page_count += 1
-                    self.sleep(2, 3, 'Sleeping for')
-            elif data_historical['Pagination']['total'] == 0:
-                break
-            else:
-                total_scraped += data_historical['Pagination']['total']
-                break
+            if data_historical['Pagination']['total'] == 0: break
+
+            df_historicaldata = df_historicaldata.append(pd.DataFrame(list(data_historical['ProductActivity'])))
+            page_count += 1
+            self.sleep(2, 3, 'Sleeping for')
+
 
         if df_historicaldata.empty: print('No records for', sku)
         df_historicaldata['productId'] = df_historicaldata['productId'].apply(lambda x: sku)
@@ -114,28 +118,41 @@ class StockX_Scraper():
         self.col_transactions.insert_many(df_historicaldata.to_dict(orient='records'))
         self.sleep(2, 3, 'Sleeping for')
 
-    def product_link_scraper_001(self, home_page, start_page, end_page):
+
+    def get_product_last_page(self, home_page):
         '''
-        Function: get_product_information_002_002()
+        Function: get_product_last_page()
+        Parameters: home_page to get page amount off of
+        Returns: Total page numbers that the home page has
+        Purpose: To get the last page number to make scraping process automatic
+        '''
+
+        r = self.get_valid_request(home_page)
+
+        soup = BeautifulSoup(r.content, 'html.parser')
+        results = soup.find_all('a', {'class': 'hTJUNS'})
+        if len(results) == 0:
+            return 1
+        else:
+            return int(results[-1].text)
+
+    def product_link_scraper_001(self, home_page):
+        '''
+        Function: product_link_scraper_001()
         Parameters: product_link (link of product to gather)
         Returns: Nothing
         Purpose: To collect the links for products in lst_links
         Call this first to get the links of what you want to scrap
-        Need to fix to automatically detect the start and end pages...
         '''
-        for page in range(start_page, end_page):
+
+        last_page = self.get_product_last_page(home_page)
+
+        for page in range(1, last_page):
             url = home_page + '&page=' + str(page)
             count = 0
-            while True:
-                count += 1
-                print('Getting valid request for ', url)
-                req = next(self.req_pool)
-                header = req.header
-                r = requests.get(url, headers=header, proxies=self.proxy)
-                if r.status_code == 200: break
-                if count > 3:
-                    count = 0
-                    self.sleep(90, 110, '---Resting for')
+
+            r = self.get_valid_request(url)
+
             soup = BeautifulSoup(r.content, 'html.parser')
             #print(soup)
             results = soup.find_all('div', {'data-testid':'product-tile'})
@@ -146,11 +163,11 @@ class StockX_Scraper():
             self.sleep(2, 3, 'Sleeping for')
 
 
-    def product_info_main_001(self, home_page, start_page, end_page):
+    def product_info_main_001(self, home_page):
         '''
         Gather all product links, then get all product info from the links
         '''
-        self.product_link_scraper_001(home_page, start_page, end_page)
+        self.product_link_scraper_001(home_page)
         random.shuffle(self.lst_links)
 
         for link in self.lst_links:
@@ -174,16 +191,9 @@ class StockX_Scraper():
         Purpose: To collect the product information for the product_scraper function
         '''
         count = 0
-        while True:
-            print('Getting valid request for ', product_link)
-            req = next(self.req_pool)
-            header = req.header
-            r = requests.get(product_link, headers=header, proxies=self.proxy)
-            if r.status_code == 200: break; time.sleep(1)
-            count += 1
-            if count > 2:
-                count = 0
-                self.sleep(90, 110, '--- Resting for')
+
+        r = self.get_valid_request(product_link)
+
         # parse the request into a BS object using BS4
         soup = BeautifulSoup(r.content, 'html.parser')
         if soup.find("span", {"data-testid":'product-detail-style'}) is not None:
