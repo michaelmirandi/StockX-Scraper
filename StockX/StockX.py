@@ -95,7 +95,6 @@ class StockX_Scraper():
             str(page_count) + '&sort=createdAt&order=DESC&country=US'
 
             if page_count > 1:
-                print(data_historical['Pagination']['total'] + 20000, page_count * 20000)
                 if data_historical['Pagination']['total'] + 20000 < page_count * 20000:
                     total_scraped += data_historical['Pagination']['total']
                     break
@@ -146,8 +145,7 @@ class StockX_Scraper():
         '''
 
         last_page = self.get_product_last_page(home_page)
-
-        for page in range(1, last_page):
+        for page in range(1, last_page + 1):
             url = home_page + '&page=' + str(page)
             count = 0
 
@@ -223,9 +221,11 @@ class StockX_Scraper():
         print(message, sleep_time, 'seconds...')
         time.sleep(sleep_time)
 
-    def main(self, home_page, start_page, end_page):
+    def main(self, home_page):
         '''
         Main function to call other functions that gather links, gather product info, and gather historical data
         '''
-        self.product_info_main_001(home_page, start_page, end_page)
+        # Scrap for new products
+        self.product_info_main_001(home_page)
+        # Scrap all data for all products in db
         self.historical_scraper_main_002()
