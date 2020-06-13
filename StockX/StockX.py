@@ -9,23 +9,22 @@ from itertools import cycle
 from pymongo import MongoClient
 from datetime import datetime
 
-class req:
-    def __init__(self, h):
-        self.header = {"User-Agent": h}
-
-
 class StockX_Scraper():
     '''
     Class based view for quickly creating scrapers that can be threaded.
     '''
+    class req:
+        def __init__(self, h):
+            self.header = {"User-Agent": h}
+
     def __init__(self, proxy, lst_headers):
         # can't stop me... try again https://www.perimeterx.com/whywasiblocked/
         # set a list of headers to cycle through
         print('Testing all proxy and headers for validity. This may take a while...')
         self.reqs = []
         for header in lst_headers:
-            r = req(header)
-            self.reqs.append(req(header))
+            r = self.req(header)
+            self.reqs.append(r)
         self.req_pool = cycle(self.reqs)
         self.lst_links = []
         self.proxy = {'http': "http://" + proxy,}
@@ -66,7 +65,6 @@ class StockX_Scraper():
             req = next(self.req_pool)
             header = req.header
             r = requests.get(url, headers=header, proxies=self.proxy)
-            print(r.status_code)
             if r.status_code == 200: return r
             count += 1
             if count > 2:
