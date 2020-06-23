@@ -8,6 +8,7 @@ import random
 from itertools import cycle
 from pymongo import MongoClient
 from datetime import datetime
+import ctypes
 
 class StockX_Scraper():
     '''
@@ -26,31 +27,51 @@ class StockX_Scraper():
             r = self.req(header)
             self.reqs.append(r)
         self.req_pool = cycle(self.reqs)
-        self.lst_links = []
+        self.set_links = set()
+        self.set_priority_links = set()
         self.proxy = {'http': "http://" + proxy,}
         self.client = MongoClient("mongodb+srv://soelml:WheresMyBelt29!@soleml-sandbox-s5fy7.mongodb.net/test?retryWrites=true&w=majority")
         self.db = self.client.SoleML
         self.col_products = self.db['products']
-        self.col_transactions = self.db['test_transactions']
+        self.col_transactions = self.db['transactions']
 
-    def historical_scraper_main_002(self):
-        lst_failed = []
+    def historical_scraper(self, new=False, priority=False):
         global total_scraped
         total_scraped = 0; count = 0; product_count = 0
-
-        for product in self.col_products.find():
+        if priority:
+            cursor = self.col_products.find({'priority': True}, no_cursor_timeout=True)
+        else:
+            cursor = self.col_products.find(no_cursor_timeout=True)
+        if new:
+            lst_products = [prod for prod in cursor if prod['lastUpdatedStockx'] is None]
+        else:
+            lst_products = [prod for prod in cursor]
+        random.shuffle(lst_products)
+        for product in lst_products:
             try:
                 self.get_historical_product_data_001(product['_id'])
                 product_count += 1
             except Exception as e:
                 print('Error', str(e))
                 print('Could not scrap:', product['name'])
-                lst_failed.append(product['_id'])
-                self.sleep(2, 3, 'Sleeping for')
+                self.sleep(1, 2, 'Sleeping for')
                 pass
             print(product_count, 'product(s) scraped so far.')
         print('Total scraped:', total_scraped)
-        print(lst_failed)
+        cursor.close()
+
+
+    def get_stored_productlinks(self):
+        '''
+        Get all of the previously stored product ids in the database so we don't make unnecessary requests
+        '''
+        set_prodlinks = set()
+
+        for prod in self.col_products.find():
+            set_prodlinks.add(prod['prodLink'])
+
+        return set_prodlinks
+
 
     def get_valid_request(self, url):
         '''
@@ -59,17 +80,22 @@ class StockX_Scraper():
         Returns: valid request for the specified URL
         Purpose: To get a valid request and not spam the server
         '''
-        count = 0
+        outer_count, inner_count = 0, 0
         while True:
             print('Getting valid request for ', url)
             req = next(self.req_pool)
             header = req.header
             r = requests.get(url, headers=header, proxies=self.proxy)
-            if r.status_code == 200: return r
-            count += 1
-            if count > 2:
-                count = 0
-                self.sleep(90, 110, '---Resting for')
+            if r.status_code == 200: self.sleep(1, 1, 'Successful Request, Sleeping for');return r
+            outer_count += 1
+            self.sleep(2, 4, '--- Potentially Blocked, sleeping for')
+            # Prevent from making
+            if inner_count > 1:
+                self.sleep(400, 410, '--- SERIOUSLY BLOCKED. Resting for')
+            if outer_count > 2:
+                outer_count = 0
+                inner_count += 1
+                self.sleep(120, 140, '--- Blocked. Resting for')
 
     def get_historical_product_data_001(self, sku):
         '''
@@ -102,18 +128,38 @@ class StockX_Scraper():
             data_historical = r.json()
             if data_historical['Pagination']['total'] == 0: break
 
+            # optimize this for only features you need..
             df_historicaldata = df_historicaldata.append(pd.DataFrame(list(data_historical['ProductActivity'])))
             page_count += 1
             self.sleep(2, 3, 'Sleeping for')
 
 
         if df_historicaldata.empty: print('No records for', sku)
+        df_historicaldata = df_historicaldata.drop_duplicates()
         df_historicaldata['productId'] = df_historicaldata['productId'].apply(lambda x: sku)
         df_historicaldata = df_historicaldata.rename(columns={'createdAt': 'soldAt'})
         df_historicaldata = df_historicaldata[['productId', 'soldAt', 'shoeSize', 'amount']]
-        df_historicaldata = df_historicaldata.astype({'soldAt': 'datetime64[ns]'})
-        self.col_transactions.insert_many(df_historicaldata.to_dict(orient='records'))
-        self.sleep(2, 3, 'Sleeping for')
+        df_historicaldata = df_historicaldata.astype({'soldAt': 'datetime64[s]'})
+        df_historicaldata = df_historicaldata.drop_duplicates()
+        curr_product = self.col_products.find_one({"_id": sku})
+        # Add in filtering for after specific date
+        if curr_product['lastUpdatedStockx'] is None:
+            self.col_transactions.insert_many(df_historicaldata.to_dict(orient='records'))
+        else:
+            df_historicaldata = df_historicaldata[df_historicaldata['soldAt'] > curr_product['lastUpdatedStockx']]
+            self.col_transactions.insert_many(df_historicaldata.to_dict(orient='records'))
+        self.col_products.update_one({'_id':curr_product['_id']}, {"$set": {'lastUpdatedStockx': datetime.now()}})
+
+    def update_priority_products(self):
+
+        # set all products to non priority
+        self.col_products.update_many({}, {"$set": {'priority': False}})
+
+        # grab the most popular current product links and store in self.set_priority_links
+        self.product_link_scraper_001('https://stockx.com/sneakers/most-popular?size_types=men', priority=True)
+
+        for product_link in self.set_priority_links:
+            self.col_products.update_one({'prodLink': product_link}, {"$set": {'priority': True}})
 
 
     def get_product_last_page(self, home_page):
@@ -128,17 +174,18 @@ class StockX_Scraper():
 
         soup = BeautifulSoup(r.content, 'html.parser')
         results = soup.find_all('a', {'class': 'hTJUNS'})
+        self.sleep(2, 4, 'Got last product page')
         if len(results) == 0:
             return 1
         else:
             return int(results[-1].text)
 
-    def product_link_scraper_001(self, home_page):
+    def product_link_scraper_001(self, home_page, priority=False):
         '''
         Function: product_link_scraper_001()
         Parameters: product_link (link of product to gather)
         Returns: Nothing
-        Purpose: To collect the links for products in lst_links
+        Purpose: To collect the links for products in set_links
         Call this first to get the links of what you want to scrap
         '''
 
@@ -154,29 +201,31 @@ class StockX_Scraper():
             results = soup.find_all('div', {'data-testid':'product-tile'})
             for div_tag in results:
                 for a_tag in div_tag.find_all('a'):
-                    self.lst_links.append('https://stockx.com' + a_tag['href'])
+                    if priority: self.set_priority_links.add('https://stockx.com' + a_tag['href'])
+                    else: self.set_links.add('https://stockx.com' + a_tag['href'])
 
-            self.sleep(2, 3, 'Sleeping for')
+            self.sleep(2, 4, 'Sleeping for')
 
 
-    def product_info_main_001(self, home_page):
+    def product_info_main_001(self):
         '''
         Gather all product links, then get all product info from the links
         '''
-        self.product_link_scraper_001(home_page)
-        random.shuffle(self.lst_links)
+        lst_links = list(self.set_links - self.get_stored_productlinks())
 
-        for link in self.lst_links:
+        random.shuffle(lst_links)
+
+        for link in lst_links:
             try:
                 # inserts the product information into the products collection
                 self.get_product_information_002(link)
-                sleep_time = random.randint(2,4)
+                sleep_time = random.randint(2, 4)
                 print('Sleeping for', sleep_time, 'seconds...')
                 time.sleep(sleep_time)
             except Exception as e:
                 print('---Error:', e)
                 print('Could not get ', link)
-                self.sleep(2, 3, 'Sleeping for')
+                self.sleep(2, 4, 'Sleeping for')
                 pass
 
     def get_product_information_002(self, product_link):
@@ -207,7 +256,8 @@ class StockX_Scraper():
 
         dict_product = {'_id': script_tag['sku'], 'name': script_tag['name'], 'brand': script_tag['brand'],
                         'model': script_tag['model'], 'style': style_num, 'color': script_tag['color'],
-                        'releasedate': script_tag['releaseDate']}
+                        'releasedate': script_tag['releaseDate'], 'img': script_tag['image'].split('?')[0],
+                        'prodLink': product_link}
         self.col_products.insert_one(dict_product)
         print("Inserted", script_tag['name'])
 
@@ -218,12 +268,3 @@ class StockX_Scraper():
         sleep_time = random.randint(lower_time, upper_time)
         print(message, sleep_time, 'seconds...')
         time.sleep(sleep_time)
-
-    def main(self, home_page):
-        '''
-        Main function to call other functions that gather links, gather product info, and gather historical data
-        '''
-        # Scrap for new products
-        self.product_info_main_001(home_page)
-        # Scrap all data for all products in db
-        self.historical_scraper_main_002()

@@ -16,4 +16,4 @@ s = StockX.StockX_Scraper(proxy, lst_headers)
 
 print('Number of combinations:', len(s.reqs))
 
-s.historical_scraper(priority=True)
+s.historical_scraper_main_002()
