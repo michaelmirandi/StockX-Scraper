@@ -1,10 +1,8 @@
-# SoleML
+# SupplyQ
 
-This is a library for scraping historical sneaker data for SoleML
+This is a library for scraping historical sneaker data for SupplyQ
 
 
 
 ## Contributing
 Michael Mirandi - mmirandi@vt.edu
-
-Michael Fox - mtfox101@vt.edu
